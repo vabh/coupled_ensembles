@@ -29,5 +29,5 @@ python train_densenet.py \
   --microBatch $microBatch \
   --nGPU $nGPU \
   --manualSeed $seed \
-  --probs $probs \
+  --probs \
   # --resume $RESUME \

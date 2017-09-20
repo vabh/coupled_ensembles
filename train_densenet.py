@@ -16,6 +16,7 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 
 import logger
+from coupled_ensemble import CoupledEnsemble
 
 
 def setup_args():
@@ -40,9 +41,8 @@ def setup_args():
     parser.add_argument('--k', type=int, default=12)
     parser.add_argument('--L', type=int, default=100)
     parser.add_argument('--num', type=int, default=4)
-    parser.add_argument('--fold', type=str, default='-1', help='choose fold for K-fold')
 
-    parser.add_argument('--probs', action='store_false', default=False, help='To choose CELoss or NLLLoss')
+    parser.add_argument('--probs', action='store_true', help='To choose CELoss or NLLLoss')
 
     return parser
 
@@ -54,16 +54,7 @@ def get_data_loaders(opt):
                                 (68.2/255,65.4/255,70.4/255))
 
     print('Dataset: ' + opt.dataset)
-    if opt.dataset in ['imagenet', 'folder', 'lfw']:
-        # folder dataset
-        dataset = dset.ImageFolder(root=opt.dataroot,
-                                   transform=transforms.Compose([
-                                       transforms.Scale(opt.imageSize),
-                                       transforms.CenterCrop(opt.imageSize),
-                                       transforms.ToTensor(),
-                                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                   ]))
-    elif opt.dataset == 'cifar10':
+    if opt.dataset == 'cifar10':
         train_dataset = dset.CIFAR10(root=opt.dataroot, download=True, train=True,
                                transform=transforms.Compose([
                                    # transforms.Scale(opt.imageSize),
@@ -91,19 +82,6 @@ def get_data_loaders(opt):
                                    transforms.ToTensor(),
                                    cifar100_normTransform,
                                ]))
-    elif opt.dataset == 'cifar20':
-        train_dataset = cifar20_data.CIFAR20(root=opt.dataroot, download=True, train=True,
-                               transform=transforms.Compose([
-                                   transforms.RandomHorizontalFlip(),
-                                   transforms.RandomCrop(32, padding=4),
-                                   transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]))
-        test_dataset = cifar20_data.CIFAR20(root=opt.dataroot, download=True, train=False,
-                               transform=transforms.Compose([
-                                   transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]))
     elif opt.dataset == 'svhn':
         train_dataset = dset.SVHN(root=opt.dataroot, download=True, split='train',
                                transform=transforms.Compose([
@@ -125,20 +103,6 @@ def get_data_loaders(opt):
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.5, 0.5, 0.5), (0.2, 0.2, 0.2)),
                                ]))
-    elif opt.dataset == 'fold':
-        # val mode training
-        train_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=True,
-                               transform=transforms.Compose([
-                                   transforms.RandomHorizontalFlip(),
-                                   transforms.RandomCrop(32, padding=4),
-                                   transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]), joint=True, fold='0')
-        test_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=False,
-                               transform=transforms.Compose([
-                                   transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]), joint=True, fold='0')
     assert train_dataset
     assert test_dataset
 
@@ -160,16 +124,15 @@ def get_model(opt):
         nClasses = 10
     assert nClasses != 0
 
-    import densenet
-
-    probs = True
-    concat_maps = False
+    
+    probs = opt.probs
     dropout = False
     if opt.dataset == 'svhn':
         dropout = True
         opt.niter = 40
 
-    net = densenet.DenseNetSplit(opt.num, nClasses, opt.k, opt.L, probs, ensemble=True, dropout=dropout)
+    net = CoupledEnsemble(None, opt.num, probs, ensemble=True, k=opt.k, L=opt.L, dropout=dropout, nClasses=nClasses)
+
     nParams = 0
     for p in net.parameters():
         nParams += p.data.nelement()
@@ -181,6 +144,7 @@ def get_model(opt):
         criterion = nn.NLLLoss()
     else:
         criterion = nn.CrossEntropyLoss()
+    print('Loss:', type(criterion).__name__)
 
     if opt.cuda:
         net.cuda()
@@ -211,8 +175,6 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
         if opt.dataset == 'svhn':
             labels = labels.long() - 1
             labels = labels.squeeze()
-        if opt.dataset == 'fold':
-            labels = labels[:, 1]
 
         images = Variable(images).cuda()
         labels = Variable(labels).cuda()
@@ -250,10 +212,6 @@ def test(net, criterion, test_loader, opt):
     data_time = 0
     for i, (images, labels) in enumerate(test_loader):
         data_time += time.time() - data_start
-
-        if opt.dataset == 'svhn':
-            labels = labels.long() - 1
-            labels.squeeze()
 
         if opt.dataset == 'fold':
             labels = labels[:, 1]
@@ -305,7 +263,7 @@ def main():
 
     # perforamnce options
     cudnn.benchmark = True
-    torch.set_num_threads(8)
+    # torch.set_num_threads(8)
 
     # init model
     net, criterion = get_model(opt)
@@ -342,7 +300,7 @@ def main():
 
         loss, train_error = train(epoch, net, criterion, train_loader,
                                   optimizer, opt)
-        if epoch >= opt.niter - 10:
+        if epoch >= opt.niter - 300:
             test_error = test(net, criterion, test_loader, opt)
         else:
             test_error = -1
@@ -352,6 +310,7 @@ def main():
         is_best = test_error < best_error
         best_error = min(test_error, best_error)
         # do checkpointing
+
         _checkpoint_dict = {
                 'epoch': epoch + 1,
                 'state_dict': net.state_dict(),
