@@ -1,5 +1,6 @@
 Code and models for [Coupled Ensembles of Neural Networks](http://arxiv.org/abs/1709.06053) 
 
+```
   @article{dutt2017coupledEnsembles,
     title={Coupled Ensembles of Neural Networks},
     author={Dutt, Anuvabh and Pellerin, Denis and Qu{\'}enot, Georges},
@@ -7,6 +8,7 @@ Code and models for [Coupled Ensembles of Neural Networks](http://arxiv.org/abs/
     eprint={1709.06053},
     year={2017},
   }
+```
 
 
 ```
