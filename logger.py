@@ -1,8 +1,8 @@
 import os
 import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-matplotlib.use('Agg')
 
 
 class Logger:
@@ -19,10 +19,11 @@ class Logger:
         header = self._gather_values(self.names, prefix='#')
         if os.path.isfile(log_file):
             mode = 'a'
+            print('Warning: Log file already exisits')
         else:
             mode = 'w'
-        with open(log_file, mode) as f:
-            f.write(header + '\n')
+            with open(log_file, mode) as f:
+                f.write(header + '\n')
 
     def _gather_values(self, vals, prefix=''):
         output = ''

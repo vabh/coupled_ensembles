@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.init as weight_init
 
 import math
 
@@ -58,8 +59,8 @@ class Transition(nn.Module):
 
 
 class DenseNet(nn.Module):
-    def __init__(self, growthRate, depth, reduction, nClasses, bottleneck,
-                            joint=False, probs=False, dropout=False):
+    def __init__(self, growthRate=12, depth=100, reduction=0.5, num_classes=100, 
+                                        bottleneck=True, dropout=False):
         super(DenseNet, self).__init__()
 
         nDenseBlocks = (depth-4) // 3
@@ -85,15 +86,15 @@ class DenseNet(nn.Module):
         nChannels += nDenseBlocks*growthRate
 
         self.bn1 = nn.BatchNorm2d(nChannels)
-        self.probs = probs
         self.dropout = dropout
 
-        self.fc = nn.Linear(nChannels, nClasses)
+        self.fc = nn.Linear(nChannels, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                weight_init.kaiming_normal(m.weight)
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -118,31 +119,10 @@ class DenseNet(nn.Module):
         out = self.dense3(out)
         out = torch.squeeze(F.avg_pool2d(F.relu(self.bn1(out)), 8))
         out = self.fc(out)
-        if self.probs:
-            out = nn.LogSoftmax()(out)
         return out
 
 
-class DenseNetSplit(nn.Module):
-    def __init__(self, num=1, nClasses=0, k=12, L=100, probs=False,
-                 ensemble=False, test=False, dropout=False):
-        super(DenseNetSplit, self).__init__()
+def densenet(**kwargs):
+    model = DenseNet(**kwargs)
+    return model
 
-        self.num = num
-        self.test = test
-        self.ensemble = ensemble
-        self.nets = nn.ModuleList([DenseNet(growthRate=k, depth=L, reduction=0.5,
-                                    bottleneck=True, nClasses=nClasses, joint=False, probs=probs, dropout=dropout)for _ in range(num)])
-
-    def forward(self, x):
-        if self.test is True or self.ensemble is False:
-            out = []
-            for n in range(self.num):
-                out.append(self.nets[n](x))
-            return out
-        else:
-            out = self.nets[0](x)
-            for n in range(1, self.num):
-                out = out + self.nets[n](x)
-
-            return out

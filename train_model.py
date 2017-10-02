@@ -4,6 +4,9 @@ import os
 import random
 import setproctitle
 import time
+import sys
+import yaml
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -16,33 +19,44 @@ import torchvision.transforms as transforms
 from torch.autograd import Variable
 
 import logger
+from coupled_ensemble import CoupledEnsemble
 
 
 def setup_args():
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--configFile', help='Specify options to this script through a .yaml file')
+
     parser.add_argument('--dataset', default='cifar100', help='cifar10 | cifar100 | cifar20 | joint | fold')
     parser.add_argument('--dataroot', default='../data', help='path to dataset')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
+    parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
+
     parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
     parser.add_argument('--microBatch', type=int, default=64, help='process data in reduced batch size for large models')
-    parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
+
     parser.add_argument('--niter', type=int, default=300, help='number of epochs to train for')
-    parser.add_argument('--lr', type=float, default=0.1, help='learning rate, default=0.1')
-    parser.add_argument('--weightDecay', type=float, default=0.0001, help='weight decay, default=0.0001')
-    parser.add_argument('--cuda', action='store_false', help='enables cuda')
-    parser.add_argument('--save', help='folder to store log files, model checkpoints')
-    parser.add_argument('--resume', help='checkpoint file to resume training from')
     parser.add_argument('--startEpoch', type=int, default=0, help='epoch number to start training from')
+    parser.add_argument('--lr', type=float, default=0.1, help='learning rate, default=0.1')
+    parser.add_argument('--lrFile', help='A txt file with each line corresponding to lr for that epoch. If give, this overrides --lr and --niter')
+    parser.add_argument('--weightDecay', type=float, default=0.0001, help='weight decay, default=0.0001')
+    parser.add_argument('--sgdMomentum', type=float, default=0.9, help='SGD mometum, default=0.9')
+    parser.add_argument('--bnMomentum', type=float, default=0.1, help='BN momentum for running mean, default=0.1')
+
+    parser.add_argument('--save', help='folder to store log files, model checkpoints')
+    parser.add_argument('--saveN', type=int, default=10, help='save last N epochs')
+    parser.add_argument('--resume', help='checkpoint file to resume training from')
+    parser.add_argument('--testOnly', action='store_true', help='Test model on data and loaded weights')
+
     parser.add_argument('--manualSeed', type=int, default=-1)
+    parser.add_argument('--cuda', action='store_false', help='enables cuda')
     parser.add_argument('--nGPU', type=int, default=1)
 
-    parser.add_argument('--k', type=int, default=12)
-    parser.add_argument('--L', type=int, default=100)
-    parser.add_argument('--num', type=int, default=4)
-    parser.add_argument('--fold', type=str, default='-1', help='choose fold for K-fold')
+    parser.add_argument('--arch', default='densenet', help='choose basic block architecture: densenet | resnet')
+    parser.add_argument('--archConfig', help='Provide arch specific properties as "prop=val"')
 
-    parser.add_argument('--probs', action='store_false', default=False, help='To choose CELoss or NLLLoss')
+    parser.add_argument('--E', type=int, default=4)
+    parser.add_argument('--probs', action='store_true', help='To choose CELoss or NLLLoss')
 
     return parser
 
@@ -54,16 +68,7 @@ def get_data_loaders(opt):
                                 (68.2/255,65.4/255,70.4/255))
 
     print('Dataset: ' + opt.dataset)
-    if opt.dataset in ['imagenet', 'folder', 'lfw']:
-        # folder dataset
-        dataset = dset.ImageFolder(root=opt.dataroot,
-                                   transform=transforms.Compose([
-                                       transforms.Scale(opt.imageSize),
-                                       transforms.CenterCrop(opt.imageSize),
-                                       transforms.ToTensor(),
-                                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                   ]))
-    elif opt.dataset == 'cifar10':
+    if opt.dataset == 'cifar10':
         train_dataset = dset.CIFAR10(root=opt.dataroot, download=True, train=True,
                                transform=transforms.Compose([
                                    # transforms.Scale(opt.imageSize),
@@ -91,19 +96,6 @@ def get_data_loaders(opt):
                                    transforms.ToTensor(),
                                    cifar100_normTransform,
                                ]))
-    elif opt.dataset == 'cifar20':
-        train_dataset = cifar20_data.CIFAR20(root=opt.dataroot, download=True, train=True,
-                               transform=transforms.Compose([
-                                   transforms.RandomHorizontalFlip(),
-                                   transforms.RandomCrop(32, padding=4),
-                                   transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]))
-        test_dataset = cifar20_data.CIFAR20(root=opt.dataroot, download=True, train=False,
-                               transform=transforms.Compose([
-                                   transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]))
     elif opt.dataset == 'svhn':
         train_dataset = dset.SVHN(root=opt.dataroot, download=True, split='train',
                                transform=transforms.Compose([
@@ -125,20 +117,29 @@ def get_data_loaders(opt):
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.5, 0.5, 0.5), (0.2, 0.2, 0.2)),
                                ]))
-    elif opt.dataset == 'fold':
-        # val mode training
-        train_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=True,
+    elif opt.dataset == 'mnist':
+        class FashionMNIST(dset.MNIST):
+            """`Fashion MNIST <https://github.com/zalandoresearch/fashion-mnist>`_ Dataset.
+            """
+            urls = [
+                'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/train-images-idx3-ubyte.gz',
+                'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/train-labels-idx1-ubyte.gz',
+                'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-images-idx3-ubyte.gz',
+                'http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz',
+            ]
+
+        train_dataset = FashionMNIST(root=opt.dataroot, download=True, train=True,
                                transform=transforms.Compose([
-                                   transforms.RandomHorizontalFlip(),
-                                   transforms.RandomCrop(32, padding=4),
+                                   # transforms.RandomHorizontalFlip(),
+                                   # transforms.RandomCrop(32, padding=4),
+                                   transforms.Scale(32),
                                    transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]), joint=True, fold='0')
-        test_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=False,
+                               ]))
+        test_dataset = FashionMNIST(root=opt.dataroot, download=True, train=False,
                                transform=transforms.Compose([
+                                   transforms.Scale(32),
                                    transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]), joint=True, fold='0')
+                               ]))
     assert train_dataset
     assert test_dataset
 
@@ -147,40 +148,51 @@ def get_data_loaders(opt):
 
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=opt.microBatch,
                                               shuffle=False, num_workers=int(opt.workers))
-    return train_loader, test_loader
 
-
-def get_model(opt):
-    nClasses = 0
+    num_classes = 0
     if opt.dataset == 'cifar10':
-        nClasses = 10
+        num_classes = 10
     elif opt.dataset == 'cifar100':
-        nClasses = 100
+        num_classes = 100
     elif opt.dataset == 'svhn':
-        nClasses = 10
-    assert nClasses != 0
+        num_classes = 10
+    elif opt.dataset == 'mnist':
+        num_classes = 10
+    assert num_classes != 0
 
-    import densenet
+    return train_loader, test_loader, num_classes
 
-    probs = True
-    concat_maps = False
+
+def get_model(opt, arch_config):
+
     dropout = False
     if opt.dataset == 'svhn':
         dropout = True
         opt.niter = 40
 
-    net = densenet.DenseNetSplit(opt.num, nClasses, opt.k, opt.L, probs, ensemble=True, dropout=dropout)
+    if not arch_config.has_key('dropout'):
+        arch_config['dropout'] = dropout
+
+    net = CoupledEnsemble(opt.arch, opt.E, opt.probs, ensemble=True,
+                          **arch_config)
+
+
+    # set BN momentum for running mean
+    for m in net.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.momentum = opt.bnMomentum
+
     nParams = 0
     for p in net.parameters():
         nParams += p.data.nelement()
     print('#Params: ', nParams)
-    # print(net)
 
     # criterion
-    if probs is True:
+    if opt.probs is True:
         criterion = nn.NLLLoss()
     else:
         criterion = nn.CrossEntropyLoss()
+    print('Loss:', type(criterion).__name__)
 
     if opt.cuda:
         net.cuda()
@@ -204,15 +216,13 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
     start = time.time()
     data_start = time.time()
     data_time = 0
-    print('\nEpoch: %d LR: %.4f %d' % (epoch, lr, UPDATE_EVERY))
+    print('\nEpoch: [%d/%d] LR: %.4f' % (epoch+1, opt.niter, lr))
     for i, (images, labels) in enumerate(train_loader):
         data_time += time.time() - data_start
 
         if opt.dataset == 'svhn':
             labels = labels.long() - 1
             labels = labels.squeeze()
-        if opt.dataset == 'fold':
-            labels = labels[:, 1]
 
         images = Variable(images).cuda()
         labels = Variable(labels).cuda()
@@ -232,10 +242,8 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
 
         data_start = time.time()
 
-    print('Total time: {0:.4f}, Data: {1:.4f}' .format((time.time() - start), data_time*1.0 / i))
     loss_epoch = loss_epoch / len(train_loader)
-    print('[%d/%d][%d] train_loss: %.4f err: %d'
-          % (epoch, opt.niter, len(train_loader), loss_epoch, score_epoch))
+    print('[Train] Time: {0:.4f}, Loss: {1:.4f} Err: {2:d}' .format((time.time() - start), loss_epoch, score_epoch))
 
     return loss_epoch, score_epoch
 
@@ -270,10 +278,9 @@ def test(net, criterion, test_loader, opt):
         data_start = time.time()
 
     loss_epoch /= len(test_loader)
-    print('Total time: {0:.4f}, Data: {1:.4f}' .format((time.time() - start), data_time*1.0 / i))
-    print('Test err: %d, Loss: %.4f' % (score_epoch, loss_epoch))
+    print('[Test]  Time: %.4f, Loss: %.4f, Err: %d' % (time.time() - start, loss_epoch, score_epoch))
 
-    return score_epoch
+    return loss_epoch, score_epoch
 
 
 def main():
@@ -281,7 +288,31 @@ def main():
     # get command line args
     parser = setup_args()
     opt = parser.parse_args()
+    try:
+        with open(opt.configFile, 'r') as f:
+            yaml_params = yaml.safe_load(f)
+        # shallow merge yaml params with opt
+        for k, v in yaml_params.iteritems():
+            try:
+                # cmd arg overwrites the value from the yaml file
+                flag = 0
+                for passed_arg in sys.argv:
+                    if k == passed_arg[2:]:
+                        flag = 1
+                        break
+                if flag == 0:
+                    setattr(opt, k, v)
+            except:
+                pass
+    except:
+        print("File not found or cannot be opened", opt.configFile)
     print(opt)
+    if opt.lrFile is not None and os.path.isfile(opt.lrFile):
+        opt.lrRates = np.loadtxt(opt.lrFile)
+        opt.niter = len(opt.lrRates)
+        print('Using LRs from "%s", training for: %d epochs' % (opt.lrFile, opt.niter))
+    else:
+        opt.lrRates = None
 
     # logger
     setproctitle.setproctitle(opt.save)
@@ -292,7 +323,7 @@ def main():
         pass
     torch.save(opt, os.path.join(opt.save, 'opt.pth'))
     log_path = os.path.join(opt.save, 'train.log')
-    log = logger.Logger(log_path, ['loss', 'train_error', 'test_error'])
+    log = logger.Logger(log_path, ['loss', 'train_error', 'test_loss', 'test_error'])
 
     # set random seed
     if opt.manualSeed == -1:
@@ -305,14 +336,47 @@ def main():
 
     # perforamnce options
     cudnn.benchmark = True
-    torch.set_num_threads(8)
+    # torch.set_num_threads(8)
+
+    # data
+    train_loader, test_loader, num_classes = get_data_loaders(opt)
+    nTrain = len(train_loader.dataset)*1.0
+    nTest = len(test_loader.dataset)*1.0
+    print('Train samples: ', nTrain)
+    print('Test samples: ', nTest)
 
     # init model
-    net, criterion = get_model(opt)
+    # get architecutre specific options
+    arch_config = {}
+    try:
+        arch_config_string = opt.archConfig
+        params = map(lambda x: x.split('='), arch_config_string.split(','))
+        for (k, v) in params:
+            # TODO: handle datatypes, this is potentially tricky
+            # YAML does auto converstion from string -> int, float, bool
+            if v.isdigit():
+                v = int(v)
+            elif v == "True" or v == "False":
+                if v == "True":
+                    v = True
+                else:
+                    v = False
+            else:
+                v = float(v)
+            arch_config[k.strip()] = v
+
+        # print(arch_config)
+    except:
+        print("archConfig string received: ", arch_config_string)
+        # raise ValueError
+
+    arch_config['num_classes'] = num_classes
+    net, criterion = get_model(opt, arch_config)
     # optimizer options
-    optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=0.9,
+    optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=opt.sgdMomentum,
                           weight_decay=opt.weightDecay, nesterov=True)
 
+    # resume
     start_epoch = opt.startEpoch
     best_error = 9999999999
     if opt.resume:
@@ -328,30 +392,37 @@ def main():
         else:
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
-    train_loader, test_loader = get_data_loaders(opt)
-    _nTrain = len(train_loader.dataset)*1.0
-    _nTest = len(test_loader.dataset)*1.0
-    print('Train samples: ', _nTrain)
-    print('Test samples: ', _nTest)
-
     # test error on model init
-    test_error = test(net, criterion, test_loader, opt)
+    test_loss, test_error = test(net, criterion, test_loader, opt)
+    if opt.testOnly:
+        return
+
+    if start_epoch == 0:
+        log.add(['NaN', 'NaN', test_loss, test_error/nTest])
+
+        # save the initial model state
+        _checkpoint_dict = {
+                'epoch': 0,
+                'state_dict': net.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'best_error': test_error}
+        save_checkpoint(_checkpoint_dict,
+                        filename=os.path.join(opt.save, 'net_epoch_0.pth'))
+        save_checkpoint(_checkpoint_dict,
+                        filename=os.path.join(opt.save, 'latest.pth'))
 
     # train for opt.niter epochs
     for epoch in range(start_epoch, opt.niter):
 
         loss, train_error = train(epoch, net, criterion, train_loader,
                                   optimizer, opt)
-        if epoch >= opt.niter - 10:
-            test_error = test(net, criterion, test_loader, opt)
-        else:
-            test_error = -1
-        log.add([loss, train_error/_nTrain, test_error/_nTest])
+        test_loss, test_error = test(net, criterion, test_loader, opt)
+        log.add([loss, train_error/nTrain, test_loss, test_error/nTest])
         log.plot()
 
+        # checkpointing
         is_best = test_error < best_error
         best_error = min(test_error, best_error)
-        # do checkpointing
         _checkpoint_dict = {
                 'epoch': epoch + 1,
                 'state_dict': net.state_dict(),
@@ -363,9 +434,9 @@ def main():
             save_checkpoint(_checkpoint_dict,
                             filename=os.path.join(opt.save, 'net_best.pth'))
 
-        if epoch % 10 == 0 or epoch >= (opt.niter-10):
+        if (epoch+1) % 10 == 0 or epoch >= (opt.niter - opt.saveN):
             save_checkpoint(_checkpoint_dict,
-                            filename=os.path.join(opt.save, 'net_epoch_%d.pth' % (epoch)))
+                            filename=os.path.join(opt.save, 'net_epoch_%d.pth' % (epoch+1)))
 
 
 # count number of incorrect classifications
@@ -376,6 +447,9 @@ def compute_score(output, target):
 
 
 def adjust_learning_rate(opt, optimizer, epoch):
+    if opt.lrRates is not None:
+        return opt.lrRates[epoch]
+
     if epoch >= 0.75*opt.niter:
         lr = opt.lr * 0.01
     elif epoch >= 0.5*opt.niter:

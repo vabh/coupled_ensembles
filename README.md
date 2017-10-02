@@ -1,9 +1,24 @@
 Code and models for [Coupled Ensembles of Neural Networks](http://arxiv.org/abs/1709.06053) 
 
-The repository includes a DenseNet trainer. The configuration can be set in `train.sh`.
+  @article{dutt2017coupledEnsembles,
+    title={Coupled Ensembles of Neural Networks},
+    author={Dutt, Anuvabh and Pellerin, Denis and Qu{\'}enot, Georges},
+    jounral={ArXiv e-prints},
+    eprint={1709.06053},
+    year={2017},
+  }
 
-Note:
-This is a temporary version. It does not exactly match what is described in the paper. The difference is that it does not implement yet the generic wrapper for the ensemble of branches.
-Instead we provide as illustration, a specific version for DenseNet-BC.
 
-The generic version and it should be made available very soon. Additionally, we will add pretrained model weights.
+```
+# The options for training can be specified in config.yaml.
+# Refer to the file for an example. It shows how to train a 
+# a couple ensemble with `E` branches, with a basic block 
+# of DenseNet-BC depth=100, growthRate=12
+
+python train_model.py --configFile config.yaml
+```
+
+
+The `models` folder contains the architecture definitions. To
+experiment with other architectures, add a the model definition
+in that folder.

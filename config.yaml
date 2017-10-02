@@ -1,0 +1,20 @@
+niter: 300
+lr: 0.1
+weightDecay: 0.0001
+sgdMomentum: 0.9
+bnMomentum: 0.1
+
+batchSize: 64
+microBatch: 64
+
+probs: True
+
+arch: 'densenet'
+archConfig: 'growthRate=12, depth=100'
+
+dataset: 'cifar100'
+
+E: 4
+
+save: 'exp1'
+# resume: 'exp1/latest.pth'
