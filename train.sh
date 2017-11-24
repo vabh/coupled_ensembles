@@ -4,24 +4,26 @@ set -x
 export CUDA_VISIBLE_DEVICES=0
 
 batchSize=64
-microBatch=32
+microBatch=64
 
 E=1
-probs='True'
-dataset="cifar100"
+dataset="fold"
 # dataset="svhn"
 
 arch='densenet'
-archConfig='depth=190'
+k=12
+L=100
+archConfig="depth=${L},growthRate=${k}"
 
+lr=0.1
 sgdMomentum=0.9
 bnMomentum=0.1
 
-nGPU=2
+nGPU=1
 seed=0
 
-SAVE="densenet_k${k}_L${L}_${dataset}_sm_${numNet}_0"
-# RESUME="densenet_k${k}_L${L}_${dataset}_sm_${numNet}_0/latest.pth"
+SAVE="./checkpoints/scale_32_f5"
+# RESUME="${SAVE}/latest.pth"
 python train_model.py \
   --dataset $dataset \
   --E $E \
@@ -30,9 +32,12 @@ python train_model.py \
   --microBatch $microBatch \
   --nGPU $nGPU \
   --manualSeed $seed \
-  --probs \
   --sgdMomentum $sgdMomentum \
   --bnMomentum $bnMomentum \
   --arch $arch \
   --archConfig $archConfig \
+  --workers 4 \
+  --lr $lr \
+  --imageSize 32 \
+  # --probs \
   # --resume $RESUME \

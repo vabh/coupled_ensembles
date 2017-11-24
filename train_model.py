@@ -20,6 +20,7 @@ from torch.autograd import Variable
 
 import logger
 from coupled_ensemble import CoupledEnsemble
+import cifar20_kfold
 
 
 def setup_args():
@@ -28,7 +29,7 @@ def setup_args():
     parser.add_argument('--configFile', help='Specify options to this script through a .yaml file')
 
     parser.add_argument('--dataset', default='cifar100', help='cifar10 | cifar100 | cifar20 | joint | fold')
-    parser.add_argument('--dataroot', default='../data', help='path to dataset')
+    parser.add_argument('--dataroot', default='../pytorch/data', help='path to dataset')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
     parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
 
@@ -87,7 +88,7 @@ def get_data_loaders(opt):
         train_dataset = dset.CIFAR100(root=opt.dataroot, download=True, train=True,
                                transform=transforms.Compose([
                                    transforms.RandomHorizontalFlip(),
-                                   transforms.RandomCrop(32, padding=4),
+                                   # transforms.RandomCrop(32, padding=4),
                                    transforms.ToTensor(),
                                    cifar100_normTransform,
                                ]))
@@ -129,22 +130,39 @@ def get_data_loaders(opt):
             ]
 
         train_dataset = FashionMNIST(root=opt.dataroot, download=True, train=True,
-                               transform=transforms.Compose([
+                                transform=transforms.Compose([
                                    # transforms.RandomHorizontalFlip(),
                                    # transforms.RandomCrop(32, padding=4),
                                    transforms.Scale(32),
                                    transforms.ToTensor(),
-                               ]))
+                                ]))
         test_dataset = FashionMNIST(root=opt.dataroot, download=True, train=False,
-                               transform=transforms.Compose([
+                                transform=transforms.Compose([
                                    transforms.Scale(32),
                                    transforms.ToTensor(),
-                               ]))
+                                ]))
+    elif opt.dataset == 'fold':
+        # val mode training
+        train_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=True,
+                               transform=transforms.Compose([
+                                   transforms.Scale(opt.imageSize),
+                                   transforms.RandomHorizontalFlip(),
+                                   # transforms.RandomCrop(32, padding=4),
+                                   transforms.ToTensor(),
+                                   cifar100_normTransform,
+                               ]), joint=True, fold='4')
+        test_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=False,
+                               transform=transforms.Compose([
+                                   transforms.Scale(opt.imageSize),
+                                   transforms.ToTensor(),
+                                   cifar100_normTransform,
+                               ]), joint=True, fold='4')
+
     assert train_dataset
     assert test_dataset
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=opt.microBatch,
-                                               shuffle=True, num_workers=int(opt.workers))
+                                               shuffle=True, num_workers=int(opt.workers), drop_last=True)
 
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=opt.microBatch,
                                               shuffle=False, num_workers=int(opt.workers))
@@ -158,6 +176,8 @@ def get_data_loaders(opt):
         num_classes = 10
     elif opt.dataset == 'mnist':
         num_classes = 10
+    elif opt.dataset == 'fold':
+        num_classes = 100
     assert num_classes != 0
 
     return train_loader, test_loader, num_classes
@@ -170,12 +190,11 @@ def get_model(opt, arch_config):
         dropout = True
         opt.niter = 40
 
-    if not arch_config.has_key('dropout'):
+    if 'dropout' not in arch_config:
         arch_config['dropout'] = dropout
 
     net = CoupledEnsemble(opt.arch, opt.E, opt.probs, ensemble=True,
                           **arch_config)
-
 
     # set BN momentum for running mean
     for m in net.modules():
@@ -208,10 +227,10 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
     net.train()
 
     lr = adjust_learning_rate(opt, optimizer, epoch)
+    optimizer.zero_grad()
 
     score_epoch = 0
     loss_epoch = 0
-    optim_batch = 0  # micro batch training
     UPDATE_EVERY = opt.batchSize // opt.microBatch  # process microBatch images, update batchSize grads
     start = time.time()
     data_start = time.time()
@@ -219,21 +238,28 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
     print('\nEpoch: [%d/%d] LR: %.4f' % (epoch+1, opt.niter, lr))
     for i, (images, labels) in enumerate(train_loader):
         data_time += time.time() - data_start
+        if epoch == 0 and i == 0:
+            print('Image res: ', images.size())
 
         if opt.dataset == 'svhn':
             labels = labels.long() - 1
             labels = labels.squeeze()
 
-        images = Variable(images).cuda()
-        labels = Variable(labels).cuda()
+        if opt.dataset == 'fold':
+            labels = labels[:, 1]
+
+        if opt.cuda:
+            images = Variable(images).cuda()
+            labels = Variable(labels).cuda()
+        else:
+            images = Variable(images)
+            labels = Variable(labels)
 
         out = net(images)
-        loss = criterion(out, labels)
+        loss = criterion(out, labels) / UPDATE_EVERY
         loss.backward()
 
-        optim_batch += 1
-        if optim_batch == UPDATE_EVERY:
-            optim_batch = 0
+        if (i + 1) % UPDATE_EVERY == 0:
             optimizer.step()
             optimizer.zero_grad()
 
@@ -266,8 +292,12 @@ def test(net, criterion, test_loader, opt):
         if opt.dataset == 'fold':
             labels = labels[:, 1]
 
-        images = Variable(images, volatile=True).cuda()
-        labels = Variable(labels).cuda()
+        if opt.cuda:
+            images = Variable(images, volatile=True).cuda()
+            labels = Variable(labels).cuda()
+        else:
+            images = Variable(images, volatile=True)
+            labels = Variable(labels)
 
         out = net(images)
         loss = criterion(out, labels)
@@ -278,6 +308,7 @@ def test(net, criterion, test_loader, opt):
         data_start = time.time()
 
     loss_epoch /= len(test_loader)
+    print('Data: ', data_time*1.0 / len(test_loader))
     print('[Test]  Time: %.4f, Loss: %.4f, Err: %d' % (time.time() - start, loss_epoch, score_epoch))
 
     return loss_epoch, score_epoch
@@ -329,23 +360,24 @@ def main():
     if opt.manualSeed == -1:
         opt.manualSeed = random.randint(1, 10000)
     random.seed(opt.manualSeed)
+    np.random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     if torch.cuda.is_available() and opt.cuda:
-        torch.cuda.manual_seed(opt.manualSeed)
+        torch.cuda.manual_seed_all(opt.manualSeed)
     print("Random Seed: ", opt.manualSeed)
 
     # perforamnce options
     cudnn.benchmark = True
     # torch.set_num_threads(8)
 
-    # data
+    # DATA
     train_loader, test_loader, num_classes = get_data_loaders(opt)
     nTrain = len(train_loader.dataset)*1.0
     nTest = len(test_loader.dataset)*1.0
     print('Train samples: ', nTrain)
     print('Test samples: ', nTest)
 
-    # init model
+    # INIT MODEL
     # get architecutre specific options
     arch_config = {}
     try:
@@ -376,7 +408,7 @@ def main():
     optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=opt.sgdMomentum,
                           weight_decay=opt.weightDecay, nesterov=True)
 
-    # resume
+    # RESUME
     start_epoch = opt.startEpoch
     best_error = 9999999999
     if opt.resume:
@@ -448,14 +480,15 @@ def compute_score(output, target):
 
 def adjust_learning_rate(opt, optimizer, epoch):
     if opt.lrRates is not None:
-        return opt.lrRates[epoch]
-
-    if epoch >= 0.75*opt.niter:
-        lr = opt.lr * 0.01
-    elif epoch >= 0.5*opt.niter:
-        lr = opt.lr * 0.1
+        lr = opt.lrRates[epoch]
     else:
-        lr = opt.lr
+        if epoch >= 0.75*opt.niter:
+            lr = opt.lr * 0.01
+        elif epoch >= 0.5*opt.niter:
+            lr = opt.lr * 0.1
+        else:
+            lr = opt.lr
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     return lr

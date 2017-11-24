@@ -1,3 +1,10 @@
+"""
+modified from github.com/bamos/densenet.pytorch
+
+Constructor modified to add options for num_classes, dropout, etc
+Added the option to included dropout after conv layers
+Changed weight init to used nn.weight_init functions
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -98,7 +105,6 @@ class DenseNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
-                # m.momentum = 0.0001 # for additional exp
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
 
@@ -117,7 +123,8 @@ class DenseNet(nn.Module):
         out = self.trans1(self.dense1(out))
         out = self.trans2(self.dense2(out))
         out = self.dense3(out)
-        out = torch.squeeze(F.avg_pool2d(F.relu(self.bn1(out)), 8))
+        # print(out.size())
+        out = torch.squeeze(F.avg_pool2d(F.relu(self.bn1(out)), out.size(2)))
         out = self.fc(out)
         return out
 

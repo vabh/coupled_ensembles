@@ -1,11 +1,9 @@
 import torch
 import torch.nn as nn
-
 import models
 
 
 class CoupledEnsemble(nn.Module):
-    # def __init__(self, base_model, num=1, probs=False, ensemble=False, test=False, k=12, L=100, dropout=False, nClasses=100):
     def __init__(self, arch='densenet', num=1, probs=False, ensemble=False, test=False, **kwargs):
         super(CoupledEnsemble, self).__init__()
 
@@ -20,7 +18,7 @@ class CoupledEnsemble(nn.Module):
         except:
             import sys
             print('Error: ', sys.exc_info()[1])
-            raise ValueError, 'Check args to architecture'
+            raise ValueError
         self.nets = nn.ModuleList([models.__dict__[arch](**kwargs) for _ in range(num)])
 
     def forward(self, x):
@@ -34,14 +32,11 @@ class CoupledEnsemble(nn.Module):
                 out = nn.LogSoftmax()(self.nets[0](x))
                 for n in range(1, self.num):
                     out = out + nn.LogSoftmax()(self.nets[n](x))
-
-                out /= self.num
             else:
                 out = self.nets[0](x)
                 for n in range(1, self.num):
                     out = out + self.nets[n](x)
-                out /= self.num
-
+            out = out / self.num
             return out
 
 
