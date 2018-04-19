@@ -3,9 +3,9 @@ Code and models for [Coupled Ensembles of Neural Networks](http://arxiv.org/abs/
   @article{dutt2017coupledEnsembles,
     title={Coupled Ensembles of Neural Networks},
     author={Dutt, Anuvabh and Pellerin, Denis and Qu{\'}enot, Georges},
-    jounral={ArXiv e-prints},
-    eprint={1709.06053},
-    year={2017},
+    booktitile={International Conference on Learning Representations},
+    year={2018},
+    url={https://openreview.net/forum?id=Hk2MHt-3-},
   }
 
 
@@ -17,7 +17,6 @@ Code and models for [Coupled Ensembles of Neural Networks](http://arxiv.org/abs/
 
 python train_model.py --configFile config.yaml
 ```
-
 
 The `models` folder contains the architecture definitions. To
 experiment with other architectures, add a the model definition
