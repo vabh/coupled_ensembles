@@ -19,7 +19,6 @@ class CoupledEnsemble(nn.Module):
             import sys
             print('Error: ', sys.exc_info()[1])
             raise ValueError
-        self.nets = nn.ModuleList([models.__dict__[arch](**kwargs) for _ in range(num)])
 
     def forward(self, x):
         if self.test is True or self.ensemble is False:
@@ -38,7 +37,3 @@ class CoupledEnsemble(nn.Module):
                     out = out + self.nets[n](x)
             out = out / self.num
             return out
-
-
-if __name__ == '__main__':
-    test = CoupledEnsemble(None, 2)

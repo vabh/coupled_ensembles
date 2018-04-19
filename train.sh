@@ -1,43 +1,49 @@
-#!/usr/bin/env sh
+#!/bin/bash
+
+export CUDA_VISIBLE_DEVICES=3
+
 set -x
 
-export CUDA_VISIBLE_DEVICES=0
+seed=1000
 
-batchSize=64
-microBatch=64
-
-E=1
-dataset="fold"
-# dataset="svhn"
-
-arch='densenet'
-k=12
-L=100
-archConfig="depth=${L},growthRate=${k}"
-
+gpu=2
+mB=64
+uB=64
+wd=0.0001
 lr=0.1
-sgdMomentum=0.9
-bnMomentum=0.1
+niter=300
 
-nGPU=1
-seed=0
+dataroot="./data"
 
-SAVE="./checkpoints/scale_32_f5"
-# RESUME="${SAVE}/latest.pth"
+dataset='cifar100'
+# dataset='imagenet'
+# dataset='stl10'
+k=33
+L=106
+E=1
+
+arch="densenet"
+archConfig="growthRate=${k},depth=${L}"
+# arch="densenet169"
+# archConfig="growthRate=${k},depth=${L},num_classes=10"
+# archConfig="num_classes=1000"
+
+save="densenet_k${k}_L${L}_${dataset}_sm_${E}_0"
+resume="${save}/latest.pth"
 python train_model.py \
+  --dataroot $dataroot \
   --dataset $dataset \
+  --batchSize $mB \
+  --microBatch $uB \
   --E $E \
-  --save $SAVE \
-  --batchSize $batchSize \
-  --microBatch $microBatch \
-  --nGPU $nGPU \
-  --manualSeed $seed \
-  --sgdMomentum $sgdMomentum \
-  --bnMomentum $bnMomentum \
   --arch $arch \
-  --archConfig $archConfig \
-  --workers 4 \
+  --save $save \
+  --nGPU $gpu\
+  --weightDecay $wd \
   --lr $lr \
-  --imageSize 32 \
-  # --probs \
-  # --resume $RESUME \
+  --manualSeed $seed \
+  --niter $niter \
+  --archConfig $archConfig \
+  --probs \
+  # --resume $resume \
+  # --testOnly \

@@ -20,7 +20,6 @@ from torch.autograd import Variable
 
 import logger
 from coupled_ensemble import CoupledEnsemble
-import cifar20_kfold
 
 
 def setup_args():
@@ -88,7 +87,7 @@ def get_data_loaders(opt):
         train_dataset = dset.CIFAR100(root=opt.dataroot, download=True, train=True,
                                transform=transforms.Compose([
                                    transforms.RandomHorizontalFlip(),
-                                   # transforms.RandomCrop(32, padding=4),
+                                   transforms.RandomCrop(32, padding=4),
                                    transforms.ToTensor(),
                                    cifar100_normTransform,
                                ]))
@@ -141,22 +140,43 @@ def get_data_loaders(opt):
                                    transforms.Scale(32),
                                    transforms.ToTensor(),
                                 ]))
-    elif opt.dataset == 'fold':
+    elif opt.dataset == 'imagenet':
+        traindir = os.path.join(opt.dataroot, 'train')
+        valdir = os.path.join(opt.dataroot, 'val')
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+        train_dataset = dset.ImageFolder(
+                        traindir,
+                        transforms.Compose([
+                            transforms.RandomResizedCrop(224),
+                            transforms.ColorJitter(0.4, 0.4, 0.4),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.ToTensor(),
+                            normalize,
+                        ]))
+
+        transform = transforms.Compose([
+                            transforms.Scale(256),
+                            transforms.CenterCrop(224),
+                            transforms.ToTensor(),
+                            normalize,
+                        ])
+        test_dataset = dset.ImageFolder(valdir, transform)
+
+    elif opt.dataset == 'stl10':
         # val mode training
-        train_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=True,
+        train_dataset = dset.STL10(root=opt.dataroot, download=True, split='train',
                                transform=transforms.Compose([
-                                   transforms.Scale(opt.imageSize),
                                    transforms.RandomHorizontalFlip(),
-                                   # transforms.RandomCrop(32, padding=4),
+                                   transforms.RandomCrop(96, padding=4),
                                    transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]), joint=True, fold='4')
-        test_dataset = cifar20_kfold.CIFAR20KFold(root=opt.dataroot, download=True, train=False,
+                                   # cifar100_normTransform,
+                               ]))
+        test_dataset = dset.STL10(root=opt.dataroot, download=True, split='test',
                                transform=transforms.Compose([
-                                   transforms.Scale(opt.imageSize),
                                    transforms.ToTensor(),
-                                   cifar100_normTransform,
-                               ]), joint=True, fold='4')
+                                   # cifar100_normTransform,
+                               ]))
 
     assert train_dataset
     assert test_dataset
@@ -176,8 +196,10 @@ def get_data_loaders(opt):
         num_classes = 10
     elif opt.dataset == 'mnist':
         num_classes = 10
-    elif opt.dataset == 'fold':
-        num_classes = 100
+    elif opt.dataset == 'imagenet':
+        num_classes = 1000
+    elif opt.dataset == 'stl10':
+        num_classes = 10
     assert num_classes != 0
 
     return train_loader, test_loader, num_classes
@@ -204,14 +226,14 @@ def get_model(opt, arch_config):
     nParams = 0
     for p in net.parameters():
         nParams += p.data.nelement()
-    print('#Params: ', nParams)
+    print('\n#Params: ', nParams)
 
     # criterion
     if opt.probs is True:
         criterion = nn.NLLLoss()
     else:
         criterion = nn.CrossEntropyLoss()
-    print('Loss:', type(criterion).__name__)
+    print('\nLoss:', type(criterion).__name__)
 
     if opt.cuda:
         net.cuda()
@@ -238,8 +260,6 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
     print('\nEpoch: [%d/%d] LR: %.4f' % (epoch+1, opt.niter, lr))
     for i, (images, labels) in enumerate(train_loader):
         data_time += time.time() - data_start
-        if epoch == 0 and i == 0:
-            print('Image res: ', images.size())
 
         if opt.dataset == 'svhn':
             labels = labels.long() - 1
@@ -275,10 +295,15 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
 
 
 # test network
-def test(net, criterion, test_loader, opt):
+def test(net, criterion, test_loader, opt, extract_activations=False):
     net.eval()
     score_epoch = 0
     loss_epoch = 0
+
+    # store activations and labels
+    activations = None
+    true_labels = None
+
     start = time.time()
     data_start = time.time()
     data_time = 0
@@ -311,7 +336,7 @@ def test(net, criterion, test_loader, opt):
     print('Data: ', data_time*1.0 / len(test_loader))
     print('[Test]  Time: %.4f, Loss: %.4f, Err: %d' % (time.time() - start, loss_epoch, score_epoch))
 
-    return loss_epoch, score_epoch
+    return loss_epoch, score_epoch, activations, true_labels
 
 
 def main():
@@ -370,13 +395,6 @@ def main():
     cudnn.benchmark = True
     # torch.set_num_threads(8)
 
-    # DATA
-    train_loader, test_loader, num_classes = get_data_loaders(opt)
-    nTrain = len(train_loader.dataset)*1.0
-    nTest = len(test_loader.dataset)*1.0
-    print('Train samples: ', nTrain)
-    print('Test samples: ', nTest)
-
     # INIT MODEL
     # get architecutre specific options
     arch_config = {}
@@ -402,11 +420,19 @@ def main():
         print("archConfig string received: ", arch_config_string)
         # raise ValueError
 
-    arch_config['num_classes'] = num_classes
+    # arch_config['num_classes'] = num_classes
     net, criterion = get_model(opt, arch_config)
+
     # optimizer options
     optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=opt.sgdMomentum,
                           weight_decay=opt.weightDecay, nesterov=True)
+
+    # DATA
+    train_loader, test_loader, num_classes = get_data_loaders(opt)
+    nTrain = len(train_loader.dataset)*1.0
+    nTest = len(test_loader.dataset)*1.0
+    print('Train samples: ', nTrain)
+    print('Test samples: ', nTest)
 
     # RESUME
     start_epoch = opt.startEpoch
@@ -425,7 +451,7 @@ def main():
             print("=> no checkpoint found at '{}'".format(opt.resume))
 
     # test error on model init
-    test_loss, test_error = test(net, criterion, test_loader, opt)
+    test_loss, test_error, _, _ = test(net, criterion, test_loader, opt)
     if opt.testOnly:
         return
 
@@ -436,8 +462,8 @@ def main():
         _checkpoint_dict = {
                 'epoch': 0,
                 'state_dict': net.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'best_error': test_error}
+                'best_error': test_error,
+                'optimizer': optimizer.state_dict()}
         save_checkpoint(_checkpoint_dict,
                         filename=os.path.join(opt.save, 'net_epoch_0.pth'))
         save_checkpoint(_checkpoint_dict,
@@ -448,7 +474,7 @@ def main():
 
         loss, train_error = train(epoch, net, criterion, train_loader,
                                   optimizer, opt)
-        test_loss, test_error = test(net, criterion, test_loader, opt)
+        test_loss, test_error, _, _ = test(net, criterion, test_loader, opt)
         log.add([loss, train_error/nTrain, test_loss, test_error/nTest])
         log.plot()
 
@@ -458,8 +484,8 @@ def main():
         _checkpoint_dict = {
                 'epoch': epoch + 1,
                 'state_dict': net.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'best_error': best_error}
+                'best_error': best_error,
+                'optimizer': optimizer.state_dict()}
         save_checkpoint(_checkpoint_dict,
                         filename=os.path.join(opt.save, 'latest.pth'))
         if is_best:
@@ -481,6 +507,8 @@ def compute_score(output, target):
 def adjust_learning_rate(opt, optimizer, epoch):
     if opt.lrRates is not None:
         lr = opt.lrRates[epoch]
+    elif opt.dataset == 'imagenet':
+        lr = opt.lr * (0.1 ** (epoch // 30))
     else:
         if epoch >= 0.75*opt.niter:
             lr = opt.lr * 0.01
