@@ -56,8 +56,9 @@ class ResNet(nn.Module):
 
         self.num_classes = num_classes
 
-        print(depth)
-        assert (depth - 2) % 9 == 0
+        if ((depth - 2) % 9) != 0:
+            print('Please give a depth value such that depth-2 is divisible by 9, given depth value is %d' % depth)
+            raise ValueError
         self.n = (depth - 2) // 9
         print('Depth: ', self.n)
 
@@ -74,8 +75,8 @@ class ResNet(nn.Module):
         for m in self.modules():
 
             if isinstance(m, nn.Conv2d):
-                weight_init.kaiming_normal(m.weight)
-                weight_init.constant(m.bias, 0.1)
+                weight_init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                # weight_init.constant_(m.bias, 0.1)
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()

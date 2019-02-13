@@ -268,12 +268,7 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
         if opt.dataset == 'fold':
             labels = labels[:, 1]
 
-        if opt.cuda:
-            images = Variable(images).cuda()
-            labels = Variable(labels).cuda()
-        else:
-            images = Variable(images)
-            labels = Variable(labels)
+        images, labels = images.to(opt.device), labels.to(opt.device)
 
         out = net(images)
         loss = criterion(out, labels) / UPDATE_EVERY
@@ -283,7 +278,7 @@ def train(epoch, net, criterion, train_loader, optimizer, opt):
             optimizer.step()
             optimizer.zero_grad()
 
-        loss_epoch = loss_epoch + loss.data[0]
+        loss_epoch += loss.item()
         score_epoch = score_epoch + compute_score(out.data, labels.data)
 
         data_start = time.time()
@@ -317,18 +312,14 @@ def test(net, criterion, test_loader, opt, extract_activations=False):
         if opt.dataset == 'fold':
             labels = labels[:, 1]
 
-        if opt.cuda:
-            images = Variable(images, volatile=True).cuda()
-            labels = Variable(labels).cuda()
-        else:
-            images = Variable(images, volatile=True)
-            labels = Variable(labels)
+        with torch.no_grad():
+            images, labels = images.to(opt.device), labels.to(opt.device)
 
-        out = net(images)
-        loss = criterion(out, labels)
+            out = net(images)
+            loss = criterion(out, labels)
 
-        loss_epoch += loss.data[0]
-        score_epoch = score_epoch + compute_score(out.data, labels.data)
+            loss_epoch += loss.item()
+            score_epoch = score_epoch + compute_score(out.data, labels.data)
 
         data_start = time.time()
 
@@ -381,6 +372,7 @@ def main():
     log_path = os.path.join(opt.save, 'train.log')
     log = logger.Logger(log_path, ['loss', 'train_error', 'test_loss', 'test_error'])
 
+    opt.device = 'cuda' if opt.cuda else 'cpu'
     # set random seed
     if opt.manualSeed == -1:
         opt.manualSeed = random.randint(1, 10000)
@@ -501,7 +493,7 @@ def main():
 def compute_score(output, target):
     pred = output.max(1)[1]
     incorrect = pred.ne(target).cpu().sum()
-    return incorrect
+    return incorrect.item()
 
 
 def adjust_learning_rate(opt, optimizer, epoch):

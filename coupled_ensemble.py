@@ -28,9 +28,9 @@ class CoupledEnsemble(nn.Module):
             return out
         else:
             if self.probs is True:
-                out = nn.LogSoftmax()(self.nets[0](x))
+                out = nn.LogSoftmax(dim=1)(self.nets[0](x))
                 for n in range(1, self.num):
-                    out = out + nn.LogSoftmax()(self.nets[n](x))
+                    out = out + nn.LogSoftmax(dim=1)(self.nets[n](x))
             else:
                 out = self.nets[0](x)
                 for n in range(1, self.num):

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=0
 
 set -x
 
@@ -13,17 +13,17 @@ wd=0.0001
 lr=0.1
 niter=300
 
-dataroot="./data"
+dataroot="../data"
 
 dataset='cifar100'
 # dataset='imagenet'
 # dataset='stl10'
-k=33
-L=106
-E=1
+k=12
+L=56
+E=2
 
-arch="densenet"
-archConfig="growthRate=${k},depth=${L}"
+arch="resnet"
+archConfig="depth=${L}"
 # arch="densenet169"
 # archConfig="growthRate=${k},depth=${L},num_classes=10"
 # archConfig="num_classes=1000"
@@ -44,6 +44,6 @@ python train_model.py \
   --manualSeed $seed \
   --niter $niter \
   --archConfig $archConfig \
-  --probs \
+  # --probs \
   # --resume $resume \
   # --testOnly \
